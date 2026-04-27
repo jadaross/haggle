@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Haggle</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <span class="logo">Haggle</span>
+      <label class="toggle">
+        <input type="checkbox" id="enabled-toggle" />
+        <span class="slider"></span>
+      </label>
+    </header>
+
+    <div id="session-status" class="status-bar">
+      <span id="session-dot" class="dot"></span>
+      <span id="session-text">Checking session...</span>
+    </div>
+
+    <section class="stat-row">
+      <div class="stat">
+        <span id="sent-today" class="stat-value">—</span>
+        <span class="stat-label">sent today</span>
+      </div>
+      <div class="stat">
+        <span id="daily-limit-display" class="stat-value">—</span>
+        <span class="stat-label">daily limit</span>
+      </div>
+    </section>
+
+    <section class="form-section">
+      <label class="field-label" for="api-key">API key</label>
+      <input type="password" id="api-key" placeholder="hgl_live_..." autocomplete="off" />
+
+      <label class="field-label" for="floor-pct">
+        Negotiation floor
+        <span class="hint">Never suggest less than this % of the listed price</span>
+      </label>
+      <div class="range-row">
+        <input type="range" id="floor-pct" min="50" max="100" step="5" value="80" />
+        <span id="floor-pct-display" class="range-value">80%</span>
+      </div>
+    </section>
+
+    <details class="advanced">
+      <summary>Limits</summary>
+      <div class="form-section">
+        <label class="field-label" for="daily-limit">Max messages per day</label>
+        <input type="number" id="daily-limit" min="1" max="50" value="20" />
+
+        <p class="hint-block">
+          Delay before messaging: 5–30 min randomised<br />
+          Min gap between messages: 3 min
+        </p>
+      </div>
+    </details>
+
+    <button id="save-btn" class="save-btn">Save</button>
+    <button id="poll-btn" class="save-btn" style="margin-top:6px;background:#1e40af;">Poll now</button>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
