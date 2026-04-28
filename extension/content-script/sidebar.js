@@ -75,7 +75,7 @@
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
-  const AVATAR_COLORS = ["#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981", "#6366f1"];
+  const AVATAR_COLORS = ["#dbeafe", "#ede9fe", "#fce7f3", "#fef3c7", "#d1fae5", "#e0e7ff"];
 
   function avatarColor(handle) {
     let hash = 0;
@@ -118,12 +118,12 @@
 
   function statusPillHtml(status) {
     const map = {
-      queued:      { color: "#60a5fa", bg: "rgba(96,165,250,0.10)" },
-      pending:     { color: "#60a5fa", bg: "rgba(96,165,250,0.10)" },
-      sent:        { color: "#60a5fa", bg: "rgba(96,165,250,0.10)" },
-      negotiating: { color: "#f59e0b", bg: "rgba(245,158,11,0.10)" },
-      sold:        { color: "#22c55e", bg: "rgba(34,197,94,0.10)"  },
-      skipped:     { color: "#525252", bg: "rgba(82,82,82,0.20)"   },
+      queued:      { color: "#1e40af", bg: "rgba(30,64,175,0.10)" },
+      pending:     { color: "#1e40af", bg: "rgba(30,64,175,0.10)" },
+      sent:        { color: "#1e40af", bg: "rgba(30,64,175,0.10)" },
+      negotiating: { color: "#b45309", bg: "rgba(180,83,9,0.10)"  },
+      sold:        { color: "#e85d2c", bg: "rgba(232,93,44,0.11)" },
+      skipped:     { color: "#a89180", bg: "rgba(168,145,128,0.20)" },
     };
     const t = map[status] || map.queued;
     return `<span class="status-pill" style="color:${t.color};background:${t.bg};">${escapeHtml(status)}</span>`;
@@ -132,12 +132,12 @@
   function renderHeader() {
     const modeLabel = state.mode.toUpperCase();
     const isManual = state.mode === "manual";
-    const modeBg = isManual ? "rgba(245,158,11,0.12)" : "rgba(34,197,94,0.10)";
-    const modeColor = isManual ? "#f59e0b" : "#22c55e";
+    const modeBg = isManual ? "rgba(180,83,9,0.12)" : "rgba(232,93,44,0.11)";
+    const modeColor = isManual ? "#b45309" : "#e85d2c";
 
-    const activeColor = state.enabled ? "#22c55e" : "#525252";
-    const activeBg = state.enabled ? "rgba(34,197,94,0.10)" : "rgba(82,82,82,0.20)";
-    const activeBorder = state.enabled ? "rgba(34,197,94,0.28)" : "rgba(82,82,82,0.30)";
+    const activeColor = state.enabled ? "#e85d2c" : "#a89180";
+    const activeBg = state.enabled ? "rgba(232,93,44,0.11)" : "rgba(168,145,128,0.20)";
+    const activeBorder = state.enabled ? "rgba(232,93,44,0.32)" : "rgba(168,145,128,0.30)";
     const activeText = state.enabled ? "agent active" : "agent off";
 
     return `
@@ -190,7 +190,7 @@
       .filter((e) => e.agentStatus === "sold")
       .reduce((s, e) => s + (e.itemPrice || 0), 0);
     const earnedStr = earned > 0 ? `£${earned.toFixed(0)}` : "—";
-    const pendingColor = pendingCount > 0 ? "#f59e0b" : "var(--text)";
+    const pendingColor = pendingCount > 0 ? "#b45309" : "var(--text)";
 
     return `
       <div class="summary-strip">
@@ -203,7 +203,7 @@
           <span class="summary-lbl">LIKES TODAY</span>
         </div>
         <div class="summary-col">
-          <span class="summary-val" style="color:#22c55e;">${earnedStr}</span>
+          <span class="summary-val" style="color:#e85d2c;">${earnedStr}</span>
           <span class="summary-lbl">EARNED</span>
         </div>
       </div>
@@ -331,10 +331,10 @@
     const initial = handle[0].toUpperCase();
     const color = avatarColor(handle);
     const statusColors = {
-      queued: "#60a5fa", pending: "#60a5fa", sent: "#60a5fa",
-      negotiating: "#f59e0b", sold: "#22c55e", skipped: "#525252",
+      queued: "#1e40af", pending: "#1e40af", sent: "#1e40af",
+      negotiating: "#b45309", sold: "#e85d2c", skipped: "#a89180",
     };
-    const statusColor = statusColors[event.agentStatus] || "#525252";
+    const statusColor = statusColors[event.agentStatus] || "#a89180";
     const price = event.itemPrice ? `£${event.itemPrice.toFixed(0)}` : "—";
 
     return `
@@ -771,16 +771,23 @@
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
       :host {
-        --bg: #0b0b0b;
-        --surface: #141414;
-        --surface-2: #1e1e1e;
-        --surface-3: #282828;
-        --border: rgba(255,255,255,0.07);
-        --border-2: rgba(255,255,255,0.13);
-        --text: #f0f0f0;
-        --text-2: #a3a3a3;
-        --text-3: #525252;
-        --accent: #22c55e;
+        --bg: #f5efe6;
+        --surface: #fbf7f0;
+        --surface-2: #ebe2d3;
+        --surface-3: #dcd0bc;
+        --border: rgba(80, 40, 20, 0.08);
+        --border-2: rgba(80, 40, 20, 0.16);
+        --text: #231408;
+        --text-2: #75594a;
+        --text-3: #a89180;
+        --accent: #e85d2c;
+        --accent-dim: rgba(232, 93, 44, 0.11);
+        --accent-border: rgba(232, 93, 44, 0.32);
+        --amber: #b45309;
+        --amber-dim: rgba(180, 83, 9, 0.10);
+        --amber-border: rgba(180, 83, 9, 0.20);
+        --blue: #1e40af;
+        --red: #991b1b;
       }
 
       #sidebar {
@@ -829,7 +836,7 @@
       .h-char {
         font-family: 'IBM Plex Mono', monospace;
         font-weight: 600;
-        color: #f0f0f0;
+        color: var(--text);
         line-height: 1;
       }
       .h-bar {
@@ -881,7 +888,7 @@
         background: var(--surface-2);
         border: 1px solid var(--border-2);
         border-radius: 9px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.12);
         z-index: 10;
         padding: 4px;
         display: flex;
@@ -1037,26 +1044,26 @@
         margin-bottom: 7px;
         overflow: hidden;
       }
-      .queue-card.below-floor { border-color: rgba(245,158,11,0.20); }
+      .queue-card.below-floor { border-color: rgba(180,83,9,0.30); }
       .below-floor-banner {
         display: flex;
         align-items: center;
         gap: 6px;
         padding: 6px 12px;
-        background: rgba(245,158,11,0.07);
+        background: rgba(180,83,9,0.10);
         font-family: 'IBM Plex Mono', monospace;
         font-size: 10px;
-        color: #f59e0b;
+        color: #b45309;
       }
       .followup-banner {
         display: flex;
         align-items: center;
         gap: 6px;
         padding: 6px 12px;
-        background: rgba(96,165,250,0.07);
+        background: rgba(30,64,175,0.08);
         font-family: 'IBM Plex Mono', monospace;
         font-size: 10px;
-        color: #60a5fa;
+        color: #1e40af;
       }
       .card-body {
         padding: 10px 12px;
@@ -1082,7 +1089,7 @@
       }
       .reasoning-chip {
         background: var(--surface-2);
-        border-left: 2px solid rgba(34,197,94,0.28);
+        border-left: 2px solid rgba(232,93,44,0.40);
         padding: 6px 9px;
         font-family: 'IBM Plex Mono', monospace;
         font-size: 10px;
@@ -1119,7 +1126,7 @@
       .message-textarea {
         width: 100%;
         background: var(--surface-2);
-        border: 1px solid rgba(34,197,94,0.28);
+        border: 1px solid rgba(232,93,44,0.40);
         border-radius: 5px;
         padding: 8px 10px;
         font-family: 'IBM Plex Mono', monospace;
@@ -1138,7 +1145,7 @@
         flex: 1;
         padding: 8px;
         background: var(--accent);
-        color: var(--bg);
+        color: #ffffff;
         border: none;
         border-radius: 7px;
         font-family: 'IBM Plex Mono', monospace;
@@ -1146,7 +1153,7 @@
         font-weight: 600;
         cursor: pointer;
       }
-      .btn-send:hover:not(:disabled) { background: #16a34a; }
+      .btn-send:hover:not(:disabled) { background: #c94a1f; }
       .btn-send:disabled { opacity: 0.6; cursor: default; }
       .btn-edit {
         padding: 8px 12px;
@@ -1208,7 +1215,7 @@
         justify-content: center;
         font-size: 13px;
         font-weight: 600;
-        color: white;
+        color: var(--text);
         flex-shrink: 0;
       }
       .like-info {
@@ -1397,7 +1404,7 @@
         color: var(--text);
         outline: none;
       }
-      .settings-input:focus { border-color: rgba(34,197,94,0.40); }
+      .settings-input:focus { border-color: rgba(232,93,44,0.50); }
       .settings-hint {
         font-family: 'IBM Plex Mono', monospace;
         font-size: 10px;
@@ -1451,7 +1458,7 @@
       .save-settings-btn {
         padding: 9px;
         background: var(--accent);
-        color: var(--bg);
+        color: #ffffff;
         border: none;
         border-radius: 7px;
         font-family: 'IBM Plex Mono', monospace;
@@ -1460,7 +1467,7 @@
         cursor: pointer;
         width: 100%;
       }
-      .save-settings-btn:hover:not(:disabled) { background: #16a34a; }
+      .save-settings-btn:hover:not(:disabled) { background: #c94a1f; }
       .save-settings-btn:disabled { opacity: 0.7; cursor: default; }
     `;
   }

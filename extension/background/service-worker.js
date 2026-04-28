@@ -106,7 +106,7 @@ async function handlePollAlarm() {
   const session = await getSession();
   if (!session.valid) {
     console.warn("[Haggle] Session invalid:", session.reason, "— skipping poll.");
-    await setBadge("!", "#f59e0b");
+    await setBadge("!", "#b45309");
     return;
   }
   clearBadge();
