@@ -26,3 +26,4 @@ build/
 .vscode/
 .idea/
 *.swp
+memory/
