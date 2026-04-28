@@ -15,7 +15,12 @@ import app.db.models  # noqa: F401 — ensure all models are registered
 config = context.config
 
 # Override sqlalchemy.url from env so alembic.ini doesn't need the real URL
-config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
+_url = os.environ["DATABASE_URL"]
+if _url.startswith("postgres://"):
+    _url = "postgresql://" + _url[len("postgres://") :]
+if _url.startswith("postgresql://") and not _url.startswith("postgresql+"):
+    _url = "postgresql+asyncpg://" + _url[len("postgresql://") :]
+config.set_main_option("sqlalchemy.url", _url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

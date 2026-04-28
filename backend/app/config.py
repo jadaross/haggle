@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,6 +8,15 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     database_url: str
     haggle_secret_key: str
+
+    @field_validator("database_url")
+    @classmethod
+    def _coerce_async_driver(cls, v: str) -> str:
+        if v.startswith("postgres://"):
+            v = "postgresql://" + v[len("postgres://") :]
+        if v.startswith("postgresql://") and not v.startswith("postgresql+"):
+            v = "postgresql+asyncpg://" + v[len("postgresql://") :]
+        return v
 
     # Server-side hard cap regardless of user config
     hard_daily_cap: int = 50
