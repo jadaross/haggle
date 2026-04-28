@@ -36,6 +36,8 @@ class FavouriteEvent:
     buyer: Buyer
     item: Item
     detected_at: datetime
+    is_followup: bool = False
+    previous_messages: list[dict] | None = None  # [{role:'seller'|'buyer', text:str, sent_at?:str}]
 
     def to_item_data_dict(self) -> dict:
         """Serialise item for JSONB storage."""

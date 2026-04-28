@@ -6,7 +6,7 @@ import anthropic
 
 from app.adapters.base import FavouriteEvent
 from app.config import settings
-from app.prompts import v1_opening
+from app.prompts import v1_followup, v1_opening
 
 _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
@@ -66,6 +66,43 @@ def generate_opening_message(
     return GeneratedMessage(
         text=text,
         prompt_version=v1_opening.VERSION,
+        model=settings.claude_model,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        latency_ms=latency_ms,
+    )
+
+
+def generate_followup_message(
+    event: FavouriteEvent,
+    floor_pct: int,
+    seller_persona: str,
+) -> GeneratedMessage:
+    """Generate a follow-up message when there is prior conversation history."""
+    user_prompt = v1_followup.build_user_prompt(
+        title=event.item.title,
+        price=event.item.price,
+        brand=event.item.brand,
+        floor_pct=floor_pct,
+        buyer_username=event.buyer.username,
+        seller_persona=seller_persona,
+        previous_messages=event.previous_messages or [],
+    )
+
+    t0 = time.monotonic()
+    response = _client.messages.create(
+        model=settings.claude_model,
+        max_tokens=256,
+        system=v1_followup.SYSTEM,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    latency_ms = int((time.monotonic() - t0) * 1000)
+
+    text = response.content[0].text.strip()
+
+    return GeneratedMessage(
+        text=text,
+        prompt_version=v1_followup.VERSION,
         model=settings.claude_model,
         input_tokens=response.usage.input_tokens,
         output_tokens=response.usage.output_tokens,

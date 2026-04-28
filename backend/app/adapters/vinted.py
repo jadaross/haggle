@@ -38,10 +38,22 @@ def parse_favourite_event(payload: dict) -> FavouriteEvent:
     )
 
     detected_at_raw = event.get("detected_at")
-    if detected_at_raw:
-        detected_at = datetime.fromisoformat(detected_at_raw.replace("Z", "+00:00"))
-    else:
+    if detected_at_raw is None:
         detected_at = datetime.now(tz=timezone.utc)
+    elif isinstance(detected_at_raw, datetime):
+        detected_at = detected_at_raw
+    else:
+        detected_at = datetime.fromisoformat(str(detected_at_raw).replace("Z", "+00:00"))
+
+    raw_prev = event.get("previous_messages") or []
+    previous_messages = []
+    for m in raw_prev:
+        if isinstance(m, dict):
+            previous_messages.append({
+                "role": str(m.get("role", "")),
+                "text": str(m.get("text", "")),
+                "sent_at": str(m["sent_at"]) if m.get("sent_at") else None,
+            })
 
     return FavouriteEvent(
         platform=payload.get("platform", "vinted_uk"),
@@ -49,6 +61,8 @@ def parse_favourite_event(payload: dict) -> FavouriteEvent:
         buyer=buyer,
         item=item,
         detected_at=detected_at,
+        is_followup=bool(event.get("is_followup", False)),
+        previous_messages=previous_messages or None,
     )
 
 

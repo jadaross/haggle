@@ -4,64 +4,95 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Haggle</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
-  <div class="container">
-    <header>
-      <span class="logo">Haggle</span>
-      <label class="toggle">
-        <input type="checkbox" id="enabled-toggle" />
-        <span class="slider"></span>
-      </label>
-    </header>
 
-    <div id="session-status" class="status-bar">
-      <span id="session-dot" class="dot"></span>
-      <span id="session-text">Checking session...</span>
+  <header>
+    <div class="header-left">
+      <div class="h-icon">
+        <span class="h-char">h</span>
+        <div class="h-bar"></div>
+      </div>
+      <span class="wordmark">haggle</span>
     </div>
+    <label class="toggle">
+      <input type="checkbox" id="enabled-toggle" />
+      <span class="toggle-track">
+        <span class="toggle-thumb"></span>
+      </span>
+    </label>
+  </header>
 
-    <section class="stat-row">
-      <div class="stat">
-        <span id="sent-today" class="stat-value">—</span>
-        <span class="stat-label">sent today</span>
-      </div>
-      <div class="stat">
-        <span id="daily-limit-display" class="stat-value">—</span>
-        <span class="stat-label">daily limit</span>
-      </div>
-    </section>
-
-    <section class="form-section">
-      <label class="field-label" for="api-key">API key</label>
-      <input type="password" id="api-key" placeholder="hgl_live_..." autocomplete="off" />
-
-      <label class="field-label" for="floor-pct">
-        Negotiation floor
-        <span class="hint">Never suggest less than this % of the listed price</span>
-      </label>
-      <div class="range-row">
-        <input type="range" id="floor-pct" min="50" max="100" step="5" value="80" />
-        <span id="floor-pct-display" class="range-value">80%</span>
-      </div>
-    </section>
-
-    <details class="advanced">
-      <summary>Limits</summary>
-      <div class="form-section">
-        <label class="field-label" for="daily-limit">Max messages per day</label>
-        <input type="number" id="daily-limit" min="1" max="50" value="20" />
-
-        <p class="hint-block">
-          Delay before messaging: 5–30 min randomised<br />
-          Min gap between messages: 3 min
-        </p>
-      </div>
-    </details>
-
-    <button id="save-btn" class="save-btn">Save</button>
-    <button id="poll-btn" class="save-btn" style="margin-top:6px;background:#1e40af;">Poll now</button>
+  <div id="pending-banner" class="pending-banner hidden">
+    <span class="pending-dot"></span>
+    <span id="pending-banner-text" class="pending-text"></span>
+    <a href="#" class="pending-link" id="pending-link">review →</a>
   </div>
+
+  <section class="mode-section">
+    <div class="section-label">AGENT MODE</div>
+    <div class="mode-options">
+      <label class="mode-option" data-mode="auto">
+        <input type="radio" name="mode" value="auto" class="mode-radio-input" />
+        <div class="mode-radio-dot"></div>
+        <div class="mode-text">
+          <span class="mode-label">Auto</span>
+          <span class="mode-desc">Agent acts within your floor. No interruptions.</span>
+        </div>
+      </label>
+      <label class="mode-option" data-mode="threshold">
+        <input type="radio" name="mode" value="threshold" class="mode-radio-input" />
+        <div class="mode-radio-dot"></div>
+        <div class="mode-text">
+          <span class="mode-label">Approve below floor</span>
+          <span class="mode-desc">Auto above floor. Asks you before going lower.</span>
+        </div>
+      </label>
+      <label class="mode-option" data-mode="manual">
+        <input type="radio" name="mode" value="manual" class="mode-radio-input" />
+        <div class="mode-radio-dot"></div>
+        <div class="mode-text">
+          <span class="mode-label">Manual</span>
+          <span class="mode-desc">Every message needs your approval first.</span>
+        </div>
+      </label>
+    </div>
+  </section>
+
+  <section class="floor-section" id="floor-section">
+    <div class="floor-header">
+      <div>
+        <div class="floor-title">Max discount</div>
+        <div class="floor-hint">How much you'll come down to close a sale</div>
+      </div>
+      <span id="floor-value" class="floor-value">25% off</span>
+    </div>
+    <input type="range" id="floor-pct" min="0" max="50" step="5" value="25" />
+    <div class="range-sub-labels">
+      <span>0% strict</span>
+      <span>50% flexible</span>
+    </div>
+    <div id="floor-example" class="floor-example">On a £50 listing, accept down to £37.50</div>
+  </section>
+
+  <section class="stats-strip">
+    <div class="stat">
+      <span id="stat-sent" class="stat-val">—</span>
+      <span class="stat-lbl">SENT TODAY</span>
+    </div>
+    <div class="stat">
+      <span id="stat-negotiating" class="stat-val">—</span>
+      <span class="stat-lbl">NEGOTIATING</span>
+    </div>
+    <div class="stat">
+      <span id="stat-earned" class="stat-val">—</span>
+      <span class="stat-lbl">EARNED</span>
+    </div>
+  </section>
 
   <script type="module" src="popup.js"></script>
 </body>

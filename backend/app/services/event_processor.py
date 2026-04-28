@@ -104,11 +104,18 @@ async def process_favourite_event(
 
     await _update_event_status(db, db_event_id, "generating")
 
-    generated = claude_service.generate_opening_message(
-        event=event,
-        floor_pct=floor_pct,
-        seller_persona=seller_persona,
-    )
+    if event.is_followup:
+        generated = claude_service.generate_followup_message(
+            event=event,
+            floor_pct=floor_pct,
+            seller_persona=seller_persona,
+        )
+    else:
+        generated = claude_service.generate_opening_message(
+            event=event,
+            floor_pct=floor_pct,
+            seller_persona=seller_persona,
+        )
 
     # 6. Persist SentMessage
     sent_msg = SentMessage(

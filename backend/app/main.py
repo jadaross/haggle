@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.db.database import engine
 from app.db.models import Base
@@ -37,3 +39,13 @@ app.add_middleware(
 
 app.include_router(events.router)
 app.include_router(stats.router)
+
+
+@app.exception_handler(Exception)
+async def debug_exception_handler(request: Request, exc: Exception):
+    tb = traceback.format_exc()
+    print("\n[Haggle 500] Unhandled exception:\n" + tb, flush=True)
+    return JSONResponse(
+        status_code=500,
+        content={"error": type(exc).__name__, "detail": str(exc), "traceback": tb.splitlines()[-12:]},
+    )

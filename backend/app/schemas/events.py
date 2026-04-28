@@ -26,11 +26,19 @@ class ItemPayload(BaseModel):
     photos: list[str] = Field(default_factory=list)
 
 
+class PreviousMessage(BaseModel):
+    role: str  # "seller" | "buyer"
+    text: str
+    sent_at: datetime | None = None
+
+
 class EventPayload(BaseModel):
     id: str
     detected_at: datetime | None = None
     buyer: BuyerPayload
     item: ItemPayload
+    is_followup: bool = False
+    previous_messages: list[PreviousMessage] = Field(default_factory=list)
 
 
 class SellerConfig(BaseModel):
