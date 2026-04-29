@@ -74,15 +74,6 @@
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
-  const AVATAR_COLORS = ["#dbeafe", "#ede9fe", "#fce7f3", "#fef3c7", "#d1fae5", "#e0e7ff"];
-
-  function avatarColor(handle) {
-    let hash = 0;
-    const s = String(handle || "?");
-    for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) | 0;
-    return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-  }
-
   function timeAgo(ts) {
     if (!ts) return "";
     const diff = Date.now() - ts;
@@ -185,10 +176,6 @@
     const pendingCount = state.pendingQueue.length;
     const dayMs = 86_400_000;
     const likesToday = state.likesLog.filter((e) => (e.likedAt || 0) > Date.now() - dayMs).length;
-    const earned = state.likesLog
-      .filter((e) => e.agentStatus === "sold")
-      .reduce((s, e) => s + (e.itemPrice || 0), 0);
-    const earnedStr = earned > 0 ? `£${earned.toFixed(0)}` : "—";
     const pendingColor = pendingCount > 0 ? "#b45309" : "var(--text)";
 
     return `
@@ -200,10 +187,6 @@
         <div class="summary-col">
           <span class="summary-val">${likesToday}</span>
           <span class="summary-lbl">LIKES TODAY</span>
-        </div>
-        <div class="summary-col">
-          <span class="summary-val" style="color:#e85d2c;">${earnedStr}</span>
-          <span class="summary-lbl">EARNED</span>
         </div>
       </div>
     `;
@@ -219,16 +202,12 @@
       `;
     }
     const pending = state.pendingQueue.length;
-    const likesActive = state.likesLog.filter((e) =>
-      ["queued", "pending", "sent", "negotiating"].includes(e.agentStatus)
-    ).length;
     const done = state.likesLog.filter(
       (e) => e.agentStatus === "sold" || e.agentStatus === "skipped"
     ).length;
 
     const tabs = [
       { id: "pending", label: `pending${pending > 0 ? ` (${pending})` : ""}` },
-      { id: "likes", label: `likes${likesActive > 0 ? ` (${likesActive})` : ""}` },
       { id: "done", label: `done${done > 0 ? ` (${done})` : ""}` },
     ];
 
@@ -257,27 +236,45 @@
 
   function renderQueueCard(item) {
     const isEditing = editingPending[item.id] === true;
+    const isAuto = item.mode === "auto";
     const floorGbp = item.floorPrice ? `£${item.floorPrice.toFixed(0)}` : "";
-    const banner = item.isBelowFloor ? `
-      <div class="below-floor-banner">
-        <span>⚠</span>
-        <span>agent wants to go below floor${floorGbp ? ` (${floorGbp})` : ""}</span>
-      </div>
-    ` : item.isFollowup ? `
-      <div class="followup-banner">
-        <span>↺</span>
-        <span>follow-up — buyer already messaged</span>
-      </div>
-    ` : "";
+
+    let banner = "";
+    if (isAuto) {
+      banner = `
+        <div class="auto-banner">
+          <span>⏱</span>
+          <span>auto · ${escapeHtml(formatCountdown(item.sendAt))}</span>
+        </div>
+      `;
+    } else if (item.isBelowFloor) {
+      banner = `
+        <div class="below-floor-banner">
+          <span>⚠</span>
+          <span>agent wants to go below floor${floorGbp ? ` (${floorGbp})` : ""}</span>
+        </div>
+      `;
+    } else if (item.isFollowup) {
+      banner = `
+        <div class="followup-banner">
+          <span>↺</span>
+          <span>follow-up — buyer already messaged</span>
+        </div>
+      `;
+    }
 
     const messageBlock = isEditing
       ? `<textarea class="message-textarea" data-item-id="${escapeHtml(item.id)}">${escapeHtml(item.proposedMessage)}</textarea>`
       : `<div class="message-text" data-action="edit-message" data-item-id="${escapeHtml(item.id)}">${escapeHtml(item.proposedMessage)}</div>`;
 
-    const sendLabel = isEditing ? "✓ send edited" : "✓ send";
+    const sendLabel = isEditing
+      ? "✓ send edited"
+      : isAuto ? "✓ send now" : "✓ send";
+    const dismissLabel = isAuto ? "cancel" : "skip";
+    const dismissAction = isAuto ? "cancel" : "skip";
 
     return `
-      <div class="queue-card${item.isBelowFloor ? " below-floor" : ""}">
+      <div class="queue-card${item.isBelowFloor ? " below-floor" : ""}${isAuto ? " auto" : ""}">
         ${banner}
         <div class="card-body">
           <div class="card-top">
@@ -294,68 +291,20 @@
           <div class="card-actions">
             <button class="btn-send" data-action="approve" data-item-id="${escapeHtml(item.id)}">${sendLabel}</button>
             <button class="btn-edit" data-action="toggle-edit" data-item-id="${escapeHtml(item.id)}">edit</button>
-            <button class="btn-skip" data-action="skip" data-item-id="${escapeHtml(item.id)}">skip</button>
+            <button class="btn-skip" data-action="${dismissAction}" data-item-id="${escapeHtml(item.id)}">${dismissLabel}</button>
           </div>
         </div>
       </div>
     `;
   }
 
-  function renderLikesTab() {
-    const likes = [...state.likesLog]
-      .filter((e) => ["queued", "pending", "sent", "negotiating"].includes(e.agentStatus))
-      .sort((a, b) => (b.likedAt || 0) - (a.likedAt || 0));
-
-    if (likes.length === 0) {
-      return `
-        <div class="info-chip">
-          <span class="info-prefix">auto: </span>monitoring for new likes every 10 min. Replies go after a 5–30 min delay.
-        </div>
-        <div class="empty-state">
-          <span class="empty-label">no likes yet</span>
-        </div>
-      `;
-    }
-
-    return `
-      <div class="info-chip">
-        <span class="info-prefix">auto: </span>monitoring for new likes every 10 min. Replies go after a 5–30 min delay.
-      </div>
-      ${likes.map((e) => renderLikeRow(e)).join("")}
-    `;
-  }
-
-  function renderLikeRow(event) {
-    const handle = event.buyerHandle || "?";
-    const initial = handle[0].toUpperCase();
-    const color = avatarColor(handle);
-    const statusColors = {
-      queued: "#1e40af", pending: "#1e40af", sent: "#1e40af",
-      negotiating: "#b45309", sold: "#e85d2c", skipped: "#a89180",
-    };
-    const statusColor = statusColors[event.agentStatus] || "#a89180";
-    const price = event.itemPrice ? `£${event.itemPrice.toFixed(0)}` : "—";
-
-    return `
-      <div class="like-block">
-        <div class="like-row">
-          <div class="avatar" style="background:${color};">${escapeHtml(initial)}</div>
-          <div class="like-info">
-            <span class="like-item">${escapeHtml(event.itemTitle || "—")}</span>
-            <span class="like-meta">@${escapeHtml(handle)} · ${timeAgo(event.likedAt)}</span>
-          </div>
-          <div class="like-right">
-            <span class="like-price">${price}</span>
-            ${statusPillHtml(event.agentStatus)}
-          </div>
-        </div>
-        ${event.agentReasoning ? `
-          <div class="reasoning-chip like-reasoning" style="border-left-color:${statusColor};">
-            <span class="reasoning-prefix" style="color:${statusColor};">agent: </span>${escapeHtml(event.agentReasoning)}
-          </div>
-        ` : ""}
-      </div>
-    `;
+  function formatCountdown(sendAt) {
+    if (!sendAt) return "scheduled";
+    const ms = sendAt - Date.now();
+    if (ms <= 0) return "sending now";
+    const minutes = Math.round(ms / 60_000);
+    if (minutes < 1) return "sending in <1m";
+    return `sending in ${minutes}m`;
   }
 
   function renderDoneTab() {
@@ -528,9 +477,8 @@
     if (popoverOpen) {
       const body = showSettings
         ? renderSettings()
-        : activeTab === "pending" ? renderPendingTab()
-        : activeTab === "likes" ? renderLikesTab()
-        : renderDoneTab();
+        : activeTab === "done" ? renderDoneTab()
+        : renderPendingTab();
 
       popoverHtml = `
         <div class="popover">
@@ -746,10 +694,11 @@
       });
     });
 
-    shadow.querySelectorAll('[data-action="skip"]').forEach((btn) => {
+    shadow.querySelectorAll('[data-action="skip"], [data-action="cancel"]').forEach((btn) => {
       btn.addEventListener("click", () => {
         const id = btn.dataset.itemId;
-        chrome.runtime.sendMessage({ type: "skip_pending", id }, (result) => {
+        const type = btn.dataset.action === "cancel" ? "cancel_pending" : "skip_pending";
+        chrome.runtime.sendMessage({ type, id }, (result) => {
           if (result?.ok) {
             state.pendingQueue = state.pendingQueue.filter((i) => i.id !== id);
             delete editingPending[id];
@@ -787,6 +736,16 @@
   }
 
   loadState();
+
+  // Periodic re-render for countdowns on auto-mode pending cards. Only ticks
+  // when the popover is open and there's at least one auto item in the queue.
+  setInterval(() => {
+    if (!popoverOpen) return;
+    if (showSettings) return;
+    if (activeTab !== "pending") return;
+    const hasAuto = (state.pendingQueue || []).some((i) => i.mode === "auto");
+    if (hasAuto) render();
+  }, 30_000);
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "sidebar_state_update") {
@@ -1327,79 +1286,19 @@
       }
       .btn-skip:hover { color: var(--text-2); }
 
-      /* Likes tab */
-      .info-chip {
-        background: var(--surface-2);
-        border-radius: 5px;
-        padding: 7px 10px;
+      /* Auto-mode banner (countdown to scheduled send) */
+      .auto-banner {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        background: rgba(232, 93, 44, 0.08);
         font-family: 'IBM Plex Mono', monospace;
         font-size: 10px;
-        color: var(--text-3);
-        margin-bottom: 10px;
-        line-height: 1.4;
-      }
-      .info-prefix {
         color: var(--accent);
-        font-weight: 500;
+        letter-spacing: 0.04em;
       }
-      .like-block {
-        display: flex;
-        flex-direction: column;
-        gap: 5px;
-        padding: 8px 0;
-        border-bottom: 1px solid var(--border);
-      }
-      .like-block:last-of-type { border-bottom: none; }
-      .like-row {
-        display: flex;
-        align-items: center;
-        gap: 9px;
-      }
-      .avatar {
-        width: 32px;
-        height: 32px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--text);
-        flex-shrink: 0;
-      }
-      .like-info {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        min-width: 0;
-      }
-      .like-item {
-        font-size: 12px;
-        font-weight: 500;
-        color: var(--text);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .like-meta {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 10px;
-        color: var(--text-3);
-      }
-      .like-right {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 3px;
-        flex-shrink: 0;
-      }
-      .like-price {
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 11px;
-        color: var(--text-2);
-      }
-      .like-reasoning { margin-left: 41px; }
+      .queue-card.auto { border-color: var(--accent-border); }
 
       /* Status pill */
       .status-pill {

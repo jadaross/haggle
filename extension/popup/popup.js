@@ -68,10 +68,6 @@ async function init() {
   $("stat-sent").textContent = String(sentToday);
   const negotiating = likesLog.filter((e) => e.agentStatus === "negotiating").length;
   $("stat-negotiating").textContent = String(negotiating);
-  const earned = likesLog
-    .filter((e) => e.agentStatus === "sold")
-    .reduce((s, e) => s + (e.itemPrice || 0), 0);
-  $("stat-earned").textContent = earned > 0 ? `£${earned.toFixed(0)}` : "—";
 }
 
 function setActiveMode(mode) {

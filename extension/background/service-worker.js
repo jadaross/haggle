@@ -6,8 +6,13 @@
  *
  * Two alarm types:
  *   haggle-poll              — recurring, every 10 minutes, polls Vinted notifications
- *   haggle-send-{notifId}    — one-shot per favourite event, fires after a randomised
- *                              5–30 minute delay (human-like timing)
+ *                              and runs the full generation pipeline for each new
+ *                              favourite (item/buyer fetch → backend → Claude).
+ *                              Result lands in pendingQueue immediately.
+ *   haggle-send-{notifId}    — one-shot per auto-mode favourite, fires after a
+ *                              randomised 5–30 minute delay (human-like timing).
+ *                              At fire time it just sends the pre-generated
+ *                              message; no Claude call.
  */
 
 import { getSession } from "../lib/session.js";
@@ -37,7 +42,6 @@ import {
   fetchUser,
   startConversation,
   sendMessage,
-  conversationHasMessages,
   getConversationMessages,
 } from "../lib/vinted-api.js";
 import { alarmDelayMinutes, checkRateLimit } from "../lib/rate-limiter.js";
@@ -54,7 +58,6 @@ const POLL_DEBOUNCE_MS = 30_000; // 30s — used by passive triggers (sidebar mo
 chrome.runtime.onInstalled.addListener(async () => {
   await ensurePollAlarm();
   console.log("[Haggle] Installed. Poll alarm registered.");
-  // Kick off a first poll right away (will no-op if not enabled / no Vinted tab)
   handlePollAlarm().catch((e) => console.warn("[Haggle] First poll failed:", e.message));
 });
 
@@ -94,10 +97,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
-// ── Poll: detect new favourites ───────────────────────────────────────────────
+// ── Poll: detect new favourites + run full pipeline immediately ───────────────
 
 async function handlePollAlarm() {
-  // Track the latest poll attempt so passive triggers can debounce
   await chrome.storage.local.set({ [LAST_POLL_KEY]: Date.now() });
 
   const settings = await getSettings();
@@ -129,135 +131,58 @@ async function handlePollAlarm() {
   console.log(`[Haggle] ${newEvents.length} new favourite event(s).`);
 
   for (let i = 0; i < newEvents.length; i++) {
-    const notif = newEvents[i];
-    const notifId = String(notif.id);
-    const likedAt = notif.updated_at ? new Date(notif.updated_at).getTime() : Date.now();
-
-    // Parse link + body up front so we have a title hint and IDs cached on the
-    // row. Cached IDs let the send alarm skip the notification re-fetch later
-    // (notifications can roll off Vinted's recent list before the alarm fires).
-    const { itemId, buyerId } = parseFavouriteLink(notif.link);
-    const titleHint = extractTitleHint(notif.body || notif.title || "");
-
-    const delayMinutes = alarmDelayMinutes(i);
-    chrome.alarms.create(`${SEND_ALARM_PREFIX}${notifId}`, { delayInMinutes: delayMinutes });
-    await markAlarmSet(notifId, `${SEND_ALARM_PREFIX}${notifId}`);
-    console.log(`[Haggle] Scheduled send for ${notifId} in ${delayMinutes}m.`);
-
-    // Render immediately with the title hint so the row isn't a "?" placeholder.
-    await upsertLikeEvent(notifId, {
-      id: notifId,
-      likedAt,
-      agentStatus: "queued",
-      agentReasoning: "",
-      buyerHandle: "",
-      itemTitle: titleHint || "Detected favourite",
-      itemId: itemId || "",
-      buyerId: buyerId || "",
-      titleHint,
-      itemPrice: 0,
-    });
-
-    // Live-enrich with real title / buyer / price. Both helpers fall back to
-    // stubs internally, so this only throws on systemic errors (no Vinted tab).
-    if (itemId && buyerId) {
-      try {
-        const [item, buyer] = await Promise.all([
-          fetchItem(session.token, itemId, titleHint),
-          fetchUser(session.token, buyerId),
-        ]);
-        await upsertLikeEvent(notifId, {
-          itemTitle: item.title || titleHint || "Detected favourite",
-          itemPrice: parseFloat(item.price_numeric || item.price || 0) || 0,
-          itemId: String(item.id || itemId),
-          buyerHandle: buyer.login || "",
-          buyerId: String(buyer.id || buyerId),
-        });
-      } catch (err) {
-        console.warn(`[Haggle] Poll-time enrichment failed for ${notifId}:`, err.message);
-      }
-    }
+    await processNewFavourite(newEvents[i], settings, session, i);
   }
 
   await broadcastToVintedTabs();
 }
 
-// ── Send: generate and (auto) deliver, or queue for approval ──────────────────
+/**
+ * Run the full generation pipeline for a single new favourite notification.
+ * On the happy path the item lands in pendingQueue immediately — either
+ * awaiting user approval (review modes) or scheduled for a delayed auto-send.
+ */
+async function processNewFavourite(notif, settings, session, index) {
+  const notifId = String(notif.id);
+  const likedAt = notif.updated_at ? new Date(notif.updated_at).getTime() : Date.now();
+  const { itemId, buyerId } = parseFavouriteLink(notif.link);
+  const titleHint = extractTitleHint(notif.body || notif.title || "");
 
-async function handleSendAlarm(notifId) {
-  const settings = await getSettings();
-  if (!settings.enabled || !settings.api_key) return;
-
-  const session = await getSession();
-  if (!session.valid) {
-    console.warn("[Haggle] Session expired at send time — deferring:", notifId);
-    await markFailed(notifId, "session_expired");
-    await updateLikeEventStatus(notifId, "skipped", "session expired");
-    await broadcastToVintedTabs();
-    return;
-  }
-
-  const limitCheck = await checkRateLimit(settings.daily_limit);
-  if (!limitCheck.allowed) {
-    console.warn("[Haggle] Rate limit:", limitCheck.reason, "— skipping:", notifId);
-    await markSkipped(notifId, limitCheck.reason);
-    await updateLikeEventStatus(notifId, "skipped", limitCheck.reason);
-    await broadcastToVintedTabs();
-    return;
-  }
-
-  // Prefer the IDs / title hint cached on the like row at poll time. Avoids a
-  // notification re-fetch (which can fail if the notification has rolled off
-  // Vinted's recent list — likely once the row is more than a day old).
-  const cachedRow = (await getLikesLog()).find((e) => e.id === notifId);
-  let itemId = cachedRow?.itemId || "";
-  let buyerId = cachedRow?.buyerId || "";
-  let titleHint = cachedRow?.titleHint || "";
-
-  if (!itemId || !buyerId || !titleHint) {
-    try {
-      const notifications = await fetchNotifications(session.token);
-      const notif = notifications.find((n) => String(n.id) === notifId);
-      if (!notif) {
-        // No cached IDs and the notification is gone — nothing to do.
-        if (!itemId || !buyerId) {
-          await markSkipped(notifId, "notification_not_found");
-          await updateLikeEventStatus(notifId, "skipped", "notification expired");
-          await broadcastToVintedTabs();
-          return;
-        }
-      } else {
-        const parsed = parseFavouriteLink(notif.link);
-        itemId = itemId || parsed.itemId || "";
-        buyerId = buyerId || parsed.buyerId || "";
-        if (!titleHint) {
-          titleHint = extractTitleHint(notif.body || notif.title || "");
-        }
-      }
-    } catch (err) {
-      console.error("[Haggle] Failed to re-fetch notifications:", err.message);
-      if (!itemId || !buyerId) {
-        await markFailed(notifId, "notification_fetch_error");
-        await updateLikeEventStatus(notifId, "skipped", "notification fetch error");
-        await broadcastToVintedTabs();
-        return;
-      }
-    }
-  }
+  // Render placeholder row right away so the sidebar shows "queued"
+  await upsertLikeEvent(notifId, {
+    id: notifId,
+    likedAt,
+    agentStatus: "queued",
+    agentReasoning: "",
+    buyerHandle: "",
+    itemTitle: titleHint || "Detected favourite",
+    itemId: itemId || "",
+    buyerId: buyerId || "",
+    titleHint,
+    itemPrice: 0,
+  });
 
   if (!itemId) {
     await markSkipped(notifId, "no_item_id");
     await updateLikeEventStatus(notifId, "skipped");
-    await broadcastToVintedTabs();
     return;
   }
   if (!buyerId) {
     await markSkipped(notifId, "no_buyer_id");
     await updateLikeEventStatus(notifId, "skipped");
-    await broadcastToVintedTabs();
     return;
   }
 
+  // Server-side rate-limit guard up front, before we burn a Claude call
+  const limitCheck = await checkRateLimit(settings.daily_limit);
+  if (!limitCheck.allowed) {
+    console.warn("[Haggle] Rate limit:", limitCheck.reason, "— skipping:", notifId);
+    await markSkipped(notifId, limitCheck.reason);
+    await updateLikeEventStatus(notifId, "skipped", limitCheck.reason);
+    return;
+  }
+
+  // Fetch item + buyer details
   let item, buyer;
   try {
     [item, buyer] = await Promise.all([
@@ -268,7 +193,6 @@ async function handleSendAlarm(notifId) {
     console.error("[Haggle] Failed to fetch item/buyer:", err.message);
     await markFailed(notifId, "detail_fetch_error");
     await updateLikeEventStatus(notifId, "skipped", "detail fetch error");
-    await broadcastToVintedTabs();
     return;
   }
 
@@ -276,7 +200,6 @@ async function handleSendAlarm(notifId) {
   const itemTitle = item.title;
   const buyerHandle = buyer.login;
 
-  // Update like event with full details now that we have them
   await upsertLikeEvent(notifId, {
     buyerHandle,
     itemTitle,
@@ -284,8 +207,8 @@ async function handleSendAlarm(notifId) {
     itemPrice,
   });
 
-  // Pre-flight: start (or get existing) conversation so we can detect prior history.
-  // Vinted's startConversation is idempotent — returns existing convo if one exists.
+  // Pre-flight conversation: get conversation id + history so we can detect
+  // prior messages and skip if the seller has already replied.
   let preConversationId = null;
   let priorMessages = [];
   try {
@@ -297,25 +220,23 @@ async function handleSendAlarm(notifId) {
       text: (m.body || m.entity?.body || "").trim(),
       sent_at: m.created_at || null,
     })).filter((m) => m.text);
-    // Vinted returns messages oldest-first, but sort defensively in case that changes.
     priorMessages.sort((a, b) => (a.sent_at || "").localeCompare(b.sent_at || ""));
   } catch (err) {
     console.warn("[Haggle] Pre-flight conversation lookup failed:", err.message);
   }
-  const isFollowup = priorMessages.length > 0;
-  const lastMessage = priorMessages[priorMessages.length - 1];
 
-  // If the seller already sent the most recent message, don't double-message
-  // the buyer — they haven't replied yet. The favourite that re-triggered us is
-  // not a green light to nudge again.
-  if (lastMessage?.role === "seller") {
+  const isFollowup = priorMessages.length > 0;
+  const lastRole = priorMessages[priorMessages.length - 1]?.role;
+
+  // Don't double-message a buyer who hasn't replied yet
+  if (lastRole === "seller") {
     console.log("[Haggle] Skipping: seller sent the last message in this thread");
     await markSkipped(notifId, "seller_spoke_last");
     await updateLikeEventStatus(notifId, "skipped", "you already messaged");
-    await broadcastToVintedTabs();
     return;
   }
 
+  // Generate the message via Render backend
   const eventPayload = {
     id: notifId,
     detected_at: new Date().toISOString(),
@@ -342,7 +263,6 @@ async function handleSendAlarm(notifId) {
     previous_messages: priorMessages,
   };
 
-  // Generate the message via Render backend
   let result;
   try {
     result = await postFavouriteEvent({
@@ -359,105 +279,181 @@ async function handleSendAlarm(notifId) {
       if (err.code === "daily_limit_reached") {
         await markSkipped(notifId, "server_rate_limit");
         await updateLikeEventStatus(notifId, "skipped", "daily limit (server)");
-        await broadcastToVintedTabs();
         return;
       }
       if (err.code === "duplicate_event") {
         await markSkipped(notifId, "duplicate");
         await updateLikeEventStatus(notifId, "skipped", "duplicate");
-        await broadcastToVintedTabs();
         return;
       }
     }
     console.error("[Haggle] Render error:", err.message);
     await markFailed(notifId, "render_error");
     await updateLikeEventStatus(notifId, "skipped", "render error");
-    await broadcastToVintedTabs();
     return;
   }
 
   if (result.status === "duplicate") {
     await markSkipped(notifId, "duplicate");
     await updateLikeEventStatus(notifId, "skipped", "duplicate");
-    await broadcastToVintedTabs();
     return;
   }
 
   const reasoning = result.reasoning || "Generated negotiation message based on buyer & item.";
   await upsertLikeEvent(notifId, { agentReasoning: reasoning });
 
-  // Decide: queue for approval or send directly?
+  // Mode branching: review (manual / threshold-below-floor / followup) vs auto
   const mode = settings.mode || "auto";
   const floorPct = settings.globalFloorPct || 75;
   const floorPrice = itemPrice * (floorPct / 100);
-  // Heuristic: an agent typically offers up to ~20% off; if that drops below floor, treat as below-floor
   const expectedOffer = itemPrice * 0.80;
   const isBelowFloor = expectedOffer < floorPrice;
-
-  // Decide whether to queue or auto-send:
-  //   - follow-ups (existing message history): always queue, regardless of mode
-  //   - manual mode: always queue
-  //   - threshold mode below floor: queue
-  //   - otherwise (auto): send directly
-  const shouldQueue = isFollowup
+  const isReview = isFollowup
     || mode === "manual"
     || (mode === "threshold" && isBelowFloor);
 
-  if (shouldQueue) {
-    await addToPendingQueue({
-      id: notifId,
-      buyerHandle,
-      buyerId: String(buyer.id),
-      itemTitle,
-      itemId: String(item.id),
-      itemPrice,
-      currency: item.currency || "GBP",
-      proposedMessage: result.message_text,
-      reasoning,
-      isBelowFloor: mode === "threshold" && isBelowFloor,
-      isFollowup,
-      floorPrice,
-      eventId: result.event_id,
-      createdAt: Date.now(),
-    });
+  const baseQueueItem = {
+    id: notifId,
+    buyerHandle,
+    buyerId: String(buyer.id),
+    itemTitle,
+    itemId: String(item.id),
+    itemPrice,
+    currency: item.currency || "GBP",
+    proposedMessage: result.message_text,
+    reasoning,
+    isBelowFloor: mode === "threshold" && isBelowFloor,
+    isFollowup,
+    floorPrice,
+    eventId: result.event_id,
+    vintedConversationId: preConversationId,
+    createdAt: Date.now(),
+  };
+
+  if (isReview) {
+    await addToPendingQueue({ ...baseQueueItem, mode: "review" });
+    await markAlarmSet(notifId, "(review)");
     await updateLikeEventStatus(notifId, "pending", reasoning);
-    console.log(`[Haggle] Queued for approval: ${notifId} (mode=${mode}, followup=${isFollowup}, belowFloor=${isBelowFloor})`);
+    console.log(`[Haggle] Queued for review: ${notifId} (mode=${mode}, followup=${isFollowup}, belowFloor=${isBelowFloor})`);
+    return;
+  }
+
+  // Auto mode: schedule a randomised send alarm; the message is already generated
+  const delayMinutes = alarmDelayMinutes(index);
+  const sendAt = Date.now() + delayMinutes * 60_000;
+  const alarmName = `${SEND_ALARM_PREFIX}${notifId}`;
+  chrome.alarms.create(alarmName, { delayInMinutes: delayMinutes });
+  await addToPendingQueue({ ...baseQueueItem, mode: "auto", sendAt, alarmName });
+  await markAlarmSet(notifId, alarmName);
+  await updateLikeEventStatus(notifId, "pending", reasoning);
+  console.log(`[Haggle] Auto-scheduled ${notifId} in ${delayMinutes}m.`);
+}
+
+// ── Send: deliver the pre-generated message (auto mode alarm) ─────────────────
+
+async function handleSendAlarm(notifId) {
+  const queue = await getPendingQueue();
+  const item = queue.find((i) => i.id === notifId);
+  if (!item) {
+    console.log(`[Haggle] Send alarm fired for ${notifId} but no queue item — already handled.`);
+    return;
+  }
+  if (item.mode !== "auto") {
+    console.log(`[Haggle] Send alarm fired for ${notifId} but mode=${item.mode} — leaving in queue.`);
+    return;
+  }
+
+  const settings = await getSettings();
+  if (!settings.enabled || !settings.api_key) return;
+
+  const session = await getSession();
+  if (!session.valid) {
+    console.warn("[Haggle] Session expired at send time — deferring:", notifId);
+    await markFailed(notifId, "session_expired");
+    await updateLikeEventStatus(notifId, "skipped", "session expired");
+    await removePendingItem(notifId);
     await broadcastToVintedTabs();
     return;
   }
 
-  // Auto path: send the message directly via Vinted (no prior history at this point)
-  let conversationId = preConversationId;
+  // Re-check the conversation right before sending. The buyer or seller may
+  // have messaged via Vinted's own UI between generation and now.
+  let conversationId = item.vintedConversationId || null;
   try {
     if (!conversationId) {
-      const conversation = await startConversation(session.token, itemId, buyerId);
-      conversationId = String(conversation.id);
+      const conv = await startConversation(session.token, item.itemId, item.buyerId);
+      conversationId = String(conv.id);
     }
-    await sendMessage(session.token, conversationId, result.message_text);
+    const raw = await getConversationMessages(session.token, conversationId);
+    const lastRole = lastMessageRole(raw, item.buyerId);
+    if (lastRole === "seller") {
+      console.log(`[Haggle] Send re-check: seller already messaged — skip ${notifId}`);
+      await markSkipped(notifId, "seller_spoke_last");
+      await updateLikeEventStatus(notifId, "skipped", "you already messaged");
+      await removePendingItem(notifId);
+      await broadcastToVintedTabs();
+      return;
+    }
+    if (lastRole === "buyer") {
+      // The buyer messaged after we generated — our pre-canned opener is now stale
+      console.log(`[Haggle] Send re-check: buyer replied — skip ${notifId}`);
+      await markSkipped(notifId, "buyer_replied");
+      await updateLikeEventStatus(notifId, "skipped", "buyer replied first");
+      await removePendingItem(notifId);
+      await broadcastToVintedTabs();
+      return;
+    }
+  } catch (err) {
+    console.warn("[Haggle] Send re-check failed; proceeding anyway:", err.message);
+  }
+
+  try {
+    await sendMessage(session.token, conversationId, item.proposedMessage);
   } catch (err) {
     console.error("[Haggle] Failed to send Vinted message:", err.message);
     await markFailed(notifId, "vinted_send_error");
     await updateLikeEventStatus(notifId, "skipped", "vinted send error");
+    await removePendingItem(notifId);
     await broadcastToVintedTabs();
     return;
   }
 
   await incrementDailyCount();
   await setLastSendTs();
-  await markSent(notifId, result.event_id);
-  await updateLikeEventStatus(notifId, "sent", reasoning);
+  await markSent(notifId, item.eventId);
+  await updateLikeEventStatus(notifId, "sent", item.reasoning);
+  await removePendingItem(notifId);
 
-  confirmSent({
-    apiKey: settings.api_key,
-    eventId: result.event_id,
-    vintedConversationId: conversationId,
-  }).catch(() => {});
+  if (item.eventId && settings.api_key) {
+    confirmSent({
+      apiKey: settings.api_key,
+      eventId: item.eventId,
+      vintedConversationId: conversationId,
+    }).catch(() => {});
+  }
 
-  console.log(`[Haggle] Message sent for item ${itemId} to buyer ${buyerId}.`);
+  console.log(`[Haggle] Auto-sent message for item ${item.itemId} to buyer ${item.buyerId}.`);
   await broadcastToVintedTabs();
 }
 
-// ── Approve / skip handlers (from sidebar) ────────────────────────────────────
+/**
+ * Classify the most recent message in a Vinted conversation as "seller" or
+ * "buyer" relative to the buyer we're messaging. Returns null on empty input.
+ */
+function lastMessageRole(rawMessages, buyerId) {
+  const msgs = (rawMessages || [])
+    .map((m) => ({
+      role: String(m.user_id) === String(buyerId) ? "buyer" : "seller",
+      text: (m.body || m.entity?.body || "").trim(),
+      sent_at: m.created_at || null,
+    }))
+    .filter((m) => m.text);
+  if (msgs.length === 0) return null;
+  msgs.sort((a, b) => (a.sent_at || "").localeCompare(b.sent_at || ""));
+  return msgs[msgs.length - 1].role;
+}
+
+// ── Approve / skip / cancel handlers (from sidebar) ───────────────────────────
 
 async function handleApprovePending(id, messageText) {
   const queue = await getPendingQueue();
@@ -471,12 +467,17 @@ async function handleApprovePending(id, messageText) {
   const limitCheck = await checkRateLimit(settings.daily_limit);
   if (!limitCheck.allowed) return { ok: false, error: limitCheck.reason };
 
-  let conversationId;
+  // Clear the auto-mode alarm if there is one — user is taking over timing.
+  if (item.alarmName) {
+    chrome.alarms.clear(item.alarmName).catch(() => {});
+  }
+
+  let conversationId = item.vintedConversationId;
   try {
-    const conversation = await startConversation(session.token, item.itemId, item.buyerId);
-    conversationId = String(conversation.id);
-    // User has explicitly approved — send the message regardless of prior history
-    // (this is the follow-up path for queued follow-ups).
+    if (!conversationId) {
+      const conversation = await startConversation(session.token, item.itemId, item.buyerId);
+      conversationId = String(conversation.id);
+    }
     await sendMessage(session.token, conversationId, messageText || item.proposedMessage);
   } catch (err) {
     console.error("[Haggle] Failed to send approved message:", err.message);
@@ -502,6 +503,11 @@ async function handleApprovePending(id, messageText) {
 }
 
 async function handleSkipPending(id) {
+  const queue = await getPendingQueue();
+  const item = queue.find((i) => i.id === id);
+  if (item?.alarmName) {
+    chrome.alarms.clear(item.alarmName).catch(() => {});
+  }
   await removePendingItem(id);
   await updateLikeEventStatus(id, "skipped", "user skipped");
   await markSkipped(id, "user_skipped");
@@ -554,9 +560,6 @@ async function broadcastToVintedTabs() {
   if (!tabs || tabs.length === 0) return;
   const data = await getSidebarState();
   for (const tab of tabs) {
-    // Callback form + explicit lastError read so Chrome doesn't log
-    // "Unchecked runtime.lastError" when a tab has no sidebar listener
-    // yet (loading) or has been navigated away from.
     chrome.tabs.sendMessage(tab.id, { type: "sidebar_state_update", data }, () => {
       void chrome.runtime.lastError;
     });
@@ -579,8 +582,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       getSidebarState()
         .then((state) => sendResponse(state))
         .catch(() => sendResponse(null));
-      // Fire-and-forget passive poll — surface fresh notifications when the
-      // sidebar mounts. Debounced so rapid page navs don't hammer Vinted.
       maybePoll()
         .then((ran) => { if (ran) broadcastToVintedTabs(); })
         .catch(() => {});
@@ -599,6 +600,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return true;
 
     case "skip_pending":
+    case "cancel_pending":
       handleSkipPending(message.id)
         .then((r) => sendResponse(r))
         .catch((e) => sendResponse({ ok: false, error: e.message }));
@@ -611,7 +613,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return true;
 
     case "settings_changed":
-      // Popup pushed a settings change directly to storage; just rebroadcast
       broadcastToVintedTabs().finally(() => sendResponse({ ok: true }));
       return true;
 
@@ -633,28 +634,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 /**
- * Extract itemId + buyerId from a Vinted notification link.
- *
- * Vinted sends two flavours:
- *   - Mobile deep-link:  vintedfr://messaging?item_id=8294435478&user_id=145161066&portal=fr
- *   - Web URL:           https://www.vinted.co.uk/items/8294435478?offering_id=145161066
- *
- * Both forms expose the IDs in query params; we also fall back to /items/{id}
- * path matching for legacy formats.
- */
-/**
  * Extract a likely item title from a Vinted favourite notification body.
- * Bodies look like: "arccherry added your Needle & Thread Sequin... to their favourites."
- * Returns "" if no title could be extracted.
+ * "<user> added your <TITLE> to their favourites." → "<TITLE>"
  */
 function extractTitleHint(body) {
   if (!body || typeof body !== "string") return "";
-  // Pattern: "<user> added your <TITLE> to their favourites."
   const m = body.match(/added your\s+(.+?)\s+to (?:their|your) favourites/i);
   if (m) return m[1].trim();
   return "";
 }
 
+/**
+ * Extract itemId + buyerId from a Vinted notification link.
+ * Mobile deep-link:  vintedfr://messaging?item_id=X&user_id=Y&portal=fr
+ * Web URL:           https://www.vinted.co.uk/items/X?offering_id=Y
+ */
 function parseFavouriteLink(link) {
   if (!link || typeof link !== "string") return { itemId: null, buyerId: null };
   const qsIdx = link.indexOf("?");
@@ -672,10 +666,10 @@ function parseFavouriteLink(link) {
 
 /**
  * Debug-only: pull the first favourite notification from Vinted, bypass dedup,
- * and run the send flow immediately.
- *   - forceQueue=false → behaves like the real alarm (auto mode auto-sends)
- *   - forceQueue=true  → always routes to pending-review queue, no auto-send,
- *                        even on a fresh conversation in auto mode
+ * and run the full pipeline.
+ *   - forceQueue=false → behaves per current mode
+ *   - forceQueue=true  → temporarily forces "manual" mode so the result lands
+ *                        in the review queue regardless of user setting
  */
 async function handleDebugForceSend(forceQueue) {
   const settings = await getSettings();
@@ -686,7 +680,6 @@ async function handleDebugForceSend(forceQueue) {
 
   const notifs = await fetchNotifications(session.token);
   console.log("[Haggle debug] notifs sample:", notifs.slice(0, 3));
-  // Pick the first entry_type=20 (favourite) — falling back to any item-linked notif
   const target =
     notifs.find((n) => n.entry_type === 20) ||
     notifs.find((n) => /item_id=|item\?id=|\/items\//.test(n.link || ""));
@@ -698,37 +691,21 @@ async function handleDebugForceSend(forceQueue) {
   }
 
   const id = String(target.id);
-  // Reset dedup + stub a like event so the sidebar shows it as freshly queued
-  await upsertLikeEvent(id, {
-    id,
-    likedAt: target.updated_at ? new Date(target.updated_at).getTime() : Date.now(),
-    agentStatus: "queued",
-    agentReasoning: forceQueue ? "(debug force-queue)" : "(debug force-send)",
-    buyerHandle: "",
-    itemTitle: target.title || target.body || "(debug) favourite",
-    itemId: String(itemId),
-    itemPrice: 0,
-  });
-  // Wipe any prior 'sent/skipped/seen' state so handleSendAlarm runs fresh
+  // Wipe prior dedup state so the pipeline runs fresh
   const seen = await getSeenEventsForDebug();
   delete seen[id];
   await chrome.storage.local.set({ seen_events: seen });
-  await markAlarmSet(id, "(debug)");
-  await broadcastToVintedTabs();
 
   if (forceQueue) {
-    // Temporarily flip to manual mode so handleSendAlarm always queues, then restore
     const originalMode = settings.mode || "auto";
-    await saveSettings({ mode: "manual" });
-    try {
-      await handleSendAlarm(id);
-    } finally {
-      await saveSettings({ mode: originalMode });
-      await broadcastToVintedTabs();
-    }
+    const overridden = { ...settings, mode: "manual" };
+    await processNewFavourite(target, overridden, session, 0);
+    // Make sure we don't actually persist the override
+    await saveSettings({ mode: originalMode });
   } else {
-    await handleSendAlarm(id);
+    await processNewFavourite(target, settings, session, 0);
   }
+  await broadcastToVintedTabs();
   return { ok: true, picked: { id, itemId, buyerId, link: target.link, forceQueue } };
 }
 
@@ -739,13 +716,10 @@ async function getSeenEventsForDebug() {
 
 // Expose debug helpers on the SW global so you can run them directly in the
 // chrome://extensions service-worker console:
-//   await debugForceQueue()   — runs full pipeline, routes to pending review
-//   await debugForceSend()    — runs full pipeline, sends if mode allows
+//   await debugForceQueue()   — runs full pipeline, routes to review queue
+//   await debugForceSend()    — runs full pipeline, respects current mode
 //   await debugClear()        — wipes likes log, pending queue, seen-events,
-//                                daily count. Settings (popup toggle / API key /
-//                                mode / floor) are preserved.
-// (chrome.runtime.sendMessage from inside the SW console fails because the SW
-//  doesn't receive its own outbound messages.)
+//                                daily count. Settings are preserved.
 self.debugForceQueue = () => handleDebugForceSend(true);
 self.debugForceSend = () => handleDebugForceSend(false);
 self.debugClear = async () => {
@@ -757,8 +731,13 @@ self.debugClear = async () => {
     "last_send_ts",
     "last_poll_ts",
   ]);
+  // Also clear any still-scheduled send alarms so they don't fire later
+  const alarms = await chrome.alarms.getAll();
+  for (const a of alarms) {
+    if (a.name.startsWith(SEND_ALARM_PREFIX)) await chrome.alarms.clear(a.name);
+  }
   await broadcastToVintedTabs();
-  console.log("[Haggle] debug: cleared likes log, pending queue, seen events, counters");
+  console.log("[Haggle] debug: cleared likes log, pending queue, seen events, counters, send alarms");
   return { ok: true };
 };
 
