@@ -2,8 +2,8 @@
  * render-client.js — HTTP client for the Haggle Render backend.
  */
 
-// Set at build/deploy time. In development, point to localhost.
-const RENDER_BASE = "http://127.0.0.1:8000";
+// Set at build/deploy time. Switch to "http://127.0.0.1:8000" for local dev.
+const RENDER_BASE = "https://haggle-api.onrender.com";
 
 /**
  * POST a favourite event to the backend.
