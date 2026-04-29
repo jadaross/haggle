@@ -53,10 +53,11 @@ export async function confirmSent({ apiKey, eventId, vintedConversationId }) {
  */
 export async function fetchStats({ apiKey, dailyLimit }) {
   const url = new URL(`${RENDER_BASE}/stats`);
-  url.searchParams.set("api_key", apiKey);
   url.searchParams.set("daily_limit", String(dailyLimit));
 
-  const res = await fetch(url.toString());
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
   if (!res.ok) return null;
   return res.json();
 }

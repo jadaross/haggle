@@ -8,7 +8,11 @@ from app.adapters.base import FavouriteEvent
 from app.config import settings
 from app.prompts import v1_followup, v1_opening
 
-_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+_client = anthropic.Anthropic(
+    api_key=settings.anthropic_api_key,
+    timeout=30.0,
+    max_retries=1,
+)
 
 
 class GeneratedMessage:

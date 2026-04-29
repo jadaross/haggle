@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.db.database import get_db
 from app.db.models import DailyRateLimit, SentMessage
@@ -24,10 +24,15 @@ async def health():
 
 @router.get("/stats", response_model=StatsResponse)
 async def stats(
-    api_key: str = Query(...),
-    daily_limit: int = Query(default=20),
+    authorization: str = Header(...),
+    daily_limit: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    api_key = authorization.removeprefix("Bearer ").strip()
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
     key_hash = hash_key(api_key)
     sent_today = await get_messages_sent_today(db, key_hash)
 
