@@ -131,23 +131,52 @@ async function handlePollAlarm() {
   for (let i = 0; i < newEvents.length; i++) {
     const notif = newEvents[i];
     const notifId = String(notif.id);
+    const likedAt = notif.updated_at ? new Date(notif.updated_at).getTime() : Date.now();
 
-    // Stub like event so the sidebar shows it immediately as 'queued'
-    await upsertLikeEvent(notifId, {
-      id: notifId,
-      likedAt: notif.updated_at ? new Date(notif.updated_at).getTime() : Date.now(),
-      agentStatus: "queued",
-      agentReasoning: "",
-      buyerHandle: "",
-      itemTitle: "Detected favourite",
-      itemId: "",
-      itemPrice: 0,
-    });
+    // Parse link + body up front so we have a title hint and IDs cached on the
+    // row. Cached IDs let the send alarm skip the notification re-fetch later
+    // (notifications can roll off Vinted's recent list before the alarm fires).
+    const { itemId, buyerId } = parseFavouriteLink(notif.link);
+    const titleHint = extractTitleHint(notif.body || notif.title || "");
 
     const delayMinutes = alarmDelayMinutes(i);
     chrome.alarms.create(`${SEND_ALARM_PREFIX}${notifId}`, { delayInMinutes: delayMinutes });
     await markAlarmSet(notifId, `${SEND_ALARM_PREFIX}${notifId}`);
     console.log(`[Haggle] Scheduled send for ${notifId} in ${delayMinutes}m.`);
+
+    // Render immediately with the title hint so the row isn't a "?" placeholder.
+    await upsertLikeEvent(notifId, {
+      id: notifId,
+      likedAt,
+      agentStatus: "queued",
+      agentReasoning: "",
+      buyerHandle: "",
+      itemTitle: titleHint || "Detected favourite",
+      itemId: itemId || "",
+      buyerId: buyerId || "",
+      titleHint,
+      itemPrice: 0,
+    });
+
+    // Live-enrich with real title / buyer / price. Both helpers fall back to
+    // stubs internally, so this only throws on systemic errors (no Vinted tab).
+    if (itemId && buyerId) {
+      try {
+        const [item, buyer] = await Promise.all([
+          fetchItem(session.token, itemId, titleHint),
+          fetchUser(session.token, buyerId),
+        ]);
+        await upsertLikeEvent(notifId, {
+          itemTitle: item.title || titleHint || "Detected favourite",
+          itemPrice: parseFloat(item.price_numeric || item.price || 0) || 0,
+          itemId: String(item.id || itemId),
+          buyerHandle: buyer.login || "",
+          buyerId: String(buyer.id || buyerId),
+        });
+      } catch (err) {
+        console.warn(`[Haggle] Poll-time enrichment failed for ${notifId}:`, err.message);
+      }
+    }
   }
 
   await broadcastToVintedTabs();
@@ -177,47 +206,57 @@ async function handleSendAlarm(notifId) {
     return;
   }
 
-  // Re-fetch notifications to get the link → itemId / buyerId
-  let itemId, buyerId;
-  try {
-    const notifications = await fetchNotifications(session.token);
-    const notif = notifications.find((n) => String(n.id) === notifId);
-    if (!notif) {
-      await markSkipped(notifId, "notification_not_found");
-      await updateLikeEventStatus(notifId, "skipped", "notification expired");
-      await broadcastToVintedTabs();
-      return;
+  // Prefer the IDs / title hint cached on the like row at poll time. Avoids a
+  // notification re-fetch (which can fail if the notification has rolled off
+  // Vinted's recent list — likely once the row is more than a day old).
+  const cachedRow = (await getLikesLog()).find((e) => e.id === notifId);
+  let itemId = cachedRow?.itemId || "";
+  let buyerId = cachedRow?.buyerId || "";
+  let titleHint = cachedRow?.titleHint || "";
+
+  if (!itemId || !buyerId || !titleHint) {
+    try {
+      const notifications = await fetchNotifications(session.token);
+      const notif = notifications.find((n) => String(n.id) === notifId);
+      if (!notif) {
+        // No cached IDs and the notification is gone — nothing to do.
+        if (!itemId || !buyerId) {
+          await markSkipped(notifId, "notification_not_found");
+          await updateLikeEventStatus(notifId, "skipped", "notification expired");
+          await broadcastToVintedTabs();
+          return;
+        }
+      } else {
+        const parsed = parseFavouriteLink(notif.link);
+        itemId = itemId || parsed.itemId || "";
+        buyerId = buyerId || parsed.buyerId || "";
+        if (!titleHint) {
+          titleHint = extractTitleHint(notif.body || notif.title || "");
+        }
+      }
+    } catch (err) {
+      console.error("[Haggle] Failed to re-fetch notifications:", err.message);
+      if (!itemId || !buyerId) {
+        await markFailed(notifId, "notification_fetch_error");
+        await updateLikeEventStatus(notifId, "skipped", "notification fetch error");
+        await broadcastToVintedTabs();
+        return;
+      }
     }
-    ({ itemId, buyerId } = parseFavouriteLink(notif.link));
-    if (!itemId) {
-      await markSkipped(notifId, "no_item_id");
-      await updateLikeEventStatus(notifId, "skipped");
-      await broadcastToVintedTabs();
-      return;
-    }
-    if (!buyerId) {
-      await markSkipped(notifId, "no_buyer_id");
-      await updateLikeEventStatus(notifId, "skipped");
-      await broadcastToVintedTabs();
-      return;
-    }
-  } catch (err) {
-    console.error("[Haggle] Failed to re-fetch notifications:", err.message);
-    await markFailed(notifId, "notification_fetch_error");
-    await updateLikeEventStatus(notifId, "skipped", "notification fetch error");
+  }
+
+  if (!itemId) {
+    await markSkipped(notifId, "no_item_id");
+    await updateLikeEventStatus(notifId, "skipped");
     await broadcastToVintedTabs();
     return;
   }
-
-  // Pull the source notification (re-fetched above) so we can extract a title
-  // hint from its body — used as a fallback for fetchItem when Vinted's item
-  // endpoints fail. e.g. "arccherry added your Needle & Thread Sequin Floral
-  // Maxi Dress UK 10 to their favourites." → "Needle & Thread Sequin..."
-  const sourceNotif = (await fetchNotifications(session.token)).find(
-    (n) => String(n.id) === notifId,
-  );
-  const notifBody = sourceNotif?.body || sourceNotif?.title || "";
-  const titleHint = extractTitleHint(notifBody);
+  if (!buyerId) {
+    await markSkipped(notifId, "no_buyer_id");
+    await updateLikeEventStatus(notifId, "skipped");
+    await broadcastToVintedTabs();
+    return;
+  }
 
   let item, buyer;
   try {
@@ -258,10 +297,24 @@ async function handleSendAlarm(notifId) {
       text: (m.body || m.entity?.body || "").trim(),
       sent_at: m.created_at || null,
     })).filter((m) => m.text);
+    // Vinted returns messages oldest-first, but sort defensively in case that changes.
+    priorMessages.sort((a, b) => (a.sent_at || "").localeCompare(b.sent_at || ""));
   } catch (err) {
     console.warn("[Haggle] Pre-flight conversation lookup failed:", err.message);
   }
   const isFollowup = priorMessages.length > 0;
+  const lastMessage = priorMessages[priorMessages.length - 1];
+
+  // If the seller already sent the most recent message, don't double-message
+  // the buyer — they haven't replied yet. The favourite that re-triggered us is
+  // not a green light to nudge again.
+  if (lastMessage?.role === "seller") {
+    console.log("[Haggle] Skipping: seller sent the last message in this thread");
+    await markSkipped(notifId, "seller_spoke_last");
+    await updateLikeEventStatus(notifId, "skipped", "you already messaged");
+    await broadcastToVintedTabs();
+    return;
+  }
 
   const eventPayload = {
     id: notifId,

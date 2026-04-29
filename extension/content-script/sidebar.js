@@ -29,6 +29,7 @@
   let showSettings = false;
   let settingsTab = "floors";
   let showModePicker = false;
+  let popoverOpen = false;
   const editingPending = {}; // notifId → boolean
   const EXAMPLE_PRICE = 50;
 
@@ -51,17 +52,15 @@
   host.id = "haggle-sidebar-host";
   Object.assign(host.style, {
     position: "fixed",
-    top: "0",
-    right: "0",
-    width: "300px",
-    height: "100vh",
+    inset: "0",
+    width: "100%",
+    height: "100%",
     zIndex: "2147483647",
-    pointerEvents: "auto",
+    // Host is a viewport-sized passthrough; the FAB and popover re-enable
+    // pointer events on themselves so the page underneath stays clickable.
+    pointerEvents: "none",
   });
   document.documentElement.appendChild(host);
-
-  // Push Vinted content left so it doesn't sit under the sidebar
-  document.documentElement.style.setProperty("padding-right", "300px");
 
   const shadow = host.attachShadow({ mode: "open" });
 
@@ -509,19 +508,44 @@
     `;
   }
 
+  function renderFab() {
+    const pendingCount =
+      (state.pendingQueue?.length || 0) +
+      (state.likesLog || []).filter((e) => e.agentStatus === "queued").length;
+    const badge = pendingCount > 0
+      ? `<span class="fab-badge">${pendingCount > 99 ? "99+" : pendingCount}</span>`
+      : "";
+    return `
+      <button class="fab${popoverOpen ? " fab-open" : ""}" data-action="toggle-popover" aria-label="${popoverOpen ? "Close" : "Open"} Haggle">
+        ${hIconHtml(28)}
+        ${badge}
+      </button>
+    `;
+  }
+
   function render() {
-    const body = showSettings
-      ? renderSettings()
-      : activeTab === "pending" ? renderPendingTab()
-      : activeTab === "likes" ? renderLikesTab()
-      : renderDoneTab();
+    let popoverHtml = "";
+    if (popoverOpen) {
+      const body = showSettings
+        ? renderSettings()
+        : activeTab === "pending" ? renderPendingTab()
+        : activeTab === "likes" ? renderLikesTab()
+        : renderDoneTab();
+
+      popoverHtml = `
+        <div class="popover">
+          ${renderHeader()}
+          ${renderSummary()}
+          ${renderTabsBar()}
+          <div class="tab-content">${body}</div>
+          ${renderFooter()}
+        </div>
+      `;
+    }
 
     root.innerHTML = `
-      ${renderHeader()}
-      ${renderSummary()}
-      ${renderTabsBar()}
-      <div class="tab-content">${body}</div>
-      ${renderFooter()}
+      ${popoverHtml}
+      ${renderFab()}
     `;
     attachEvents();
   }
@@ -529,6 +553,20 @@
   // ── Event wiring ────────────────────────────────────────────────────────────
 
   function attachEvents() {
+    const fabBtn = shadow.querySelector('[data-action="toggle-popover"]');
+    if (fabBtn) {
+      fabBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        popoverOpen = !popoverOpen;
+        if (popoverOpen) {
+          showModePicker = false;
+          loadState();
+        } else {
+          render();
+        }
+      });
+    }
+
     shadow.querySelectorAll("[data-tab]").forEach((btn) => {
       btn.addEventListener("click", () => {
         activeTab = btn.dataset.tab;
@@ -763,6 +801,56 @@
     return false;
   });
 
+  // ── Close-on-outside-click & Esc ────────────────────────────────────────────
+  // Clicks on the FAB and inside the popover go to the host (shadow DOM masks
+  // the real target), so host.contains(target) is true for them. Anything else
+  // is a real outside click — close.
+  document.addEventListener("click", (e) => {
+    if (!popoverOpen) return;
+    if (host.contains(e.target)) return;
+    popoverOpen = false;
+    render();
+  }, true);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && popoverOpen) {
+      popoverOpen = false;
+      render();
+    }
+  });
+
+  // ── Survival across SPA navigation ──────────────────────────────────────────
+  // Vinted runs Next.js App Router; some route changes detach direct children
+  // of <html>. Re-attach the host whenever it goes missing. Also close the
+  // popover on nav so it doesn't follow the user across pages.
+  const survivalObserver = new MutationObserver(() => {
+    if (!document.documentElement.contains(host)) {
+      document.documentElement.appendChild(host);
+    }
+  });
+  survivalObserver.observe(document.documentElement, { childList: true });
+  if (document.body) {
+    survivalObserver.observe(document.body, { childList: true });
+  }
+
+  let lastHref = location.href;
+  const onMaybeNav = () => {
+    if (location.href === lastHref) return;
+    lastHref = location.href;
+    if (!document.documentElement.contains(host)) {
+      document.documentElement.appendChild(host);
+    }
+    if (popoverOpen) {
+      popoverOpen = false;
+      render();
+    }
+  };
+  window.addEventListener("popstate", onMaybeNav);
+  // Catch pushState/replaceState in the isolated world. Won't fire when the
+  // page-world calls them directly (isolated worlds don't share globals), but
+  // the MutationObserver above is the real safety net for that case.
+  setInterval(onMaybeNav, 1000);
+
   // ── Embedded CSS ────────────────────────────────────────────────────────────
 
   function SIDEBAR_CSS() {
@@ -790,17 +878,78 @@
         --red: #991b1b;
       }
 
+      /* Outer container fills the (pointer-events:none) host. The FAB and
+         popover are absolutely positioned inside it and re-enable pointer
+         events on themselves. */
       #sidebar {
-        width: 300px;
-        height: 100vh;
-        background: var(--bg);
-        color: var(--text);
-        display: flex;
-        flex-direction: column;
+        position: absolute;
+        inset: 0;
         font-family: 'IBM Plex Sans', -apple-system, sans-serif;
         font-size: 13px;
-        border-left: 1px solid var(--border);
-        position: relative;
+        color: var(--text);
+        pointer-events: none;
+      }
+
+      .fab {
+        position: absolute;
+        right: 20px;
+        bottom: 20px;
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        background: var(--bg);
+        border: 1px solid var(--border-2);
+        box-shadow: 0 6px 20px rgba(60, 30, 10, 0.18), 0 1px 3px rgba(60, 30, 10, 0.10);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        pointer-events: auto;
+        transition: transform 120ms ease, box-shadow 120ms ease;
+      }
+      .fab:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(60, 30, 10, 0.22), 0 1px 3px rgba(60, 30, 10, 0.10); }
+      .fab:active { transform: translateY(0); }
+      .fab.fab-open { background: var(--surface-2); }
+
+      .fab-badge {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        border-radius: 9px;
+        background: var(--accent);
+        color: #fff;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 10px;
+        font-weight: 600;
+        line-height: 18px;
+        text-align: center;
+        border: 2px solid var(--bg);
+      }
+
+      .popover {
+        position: absolute;
+        right: 20px;
+        bottom: 84px;
+        width: 360px;
+        max-height: min(620px, calc(100vh - 120px));
+        background: var(--bg);
+        border: 1px solid var(--border-2);
+        border-radius: 14px;
+        box-shadow: 0 16px 48px rgba(60, 30, 10, 0.22), 0 2px 8px rgba(60, 30, 10, 0.10);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        pointer-events: auto;
+        transform-origin: bottom right;
+        animation: haggle-popover-in 140ms ease-out;
+      }
+
+      @keyframes haggle-popover-in {
+        from { opacity: 0; transform: translateY(6px) scale(0.98); }
+        to   { opacity: 1; transform: translateY(0)   scale(1); }
       }
 
       button, input, textarea, select {
